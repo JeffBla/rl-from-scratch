@@ -6,14 +6,39 @@ from collections import defaultdict
 train_env = gym.make("Blackjack-v1")
 
 
-def gen_episode(env, policy):
+def argmax2(d):
+    return 0 if d[0] > d[1] else 1
+
+
+def target_policy(Q, state):
+    return argmax2(Q[state])
+
+
+def behavior_policy(Q, state, eps=0.2):
+    greedy = argmax2(Q[state])
+
+    a = None
+    p = None
+    if np.random.rand() < eps:
+        a = np.random.choice([0, 1])
+    else:
+        a = greedy
+
+    if a == greedy:
+        p = 1 - eps + eps / 2.0
+    else:
+        p = eps / 2.0
+    return a, p
+
+
+def gen_episode(env, Q, policy):
     state, _ = env.reset()
     episode, done = [], False
 
     while not done:
-        a = policy(state)
+        a, p = policy(Q, state)
         ns, r, terminated, truncated, _ = env.step(a)
-        episode.append((state, a, r))
+        episode.append((state, a, r, p))
         state, done = ns, terminated or truncated
     return episode
 
@@ -21,41 +46,30 @@ def gen_episode(env, policy):
 def mc_policy_iter(env, alpha=0.1, gamma=1.0, num_episodes=10000, eps=0.1):
     Q = defaultdict(lambda: {0: 0.0, 1: 0.0})
 
-    # initial random policy
-    def policy(s):
-        return np.random.choice([0, 1])
-
     for i in range(num_episodes):
-        episode = gen_episode(env, policy)
+        episode = gen_episode(env, Q, behavior_policy)
         G, visited = 0.0, set()
+        W = 1.0
 
         # Monte Carlo first-visit update
-        for s, a, r in reversed(episode):
+        for s, a, r, p in reversed(episode):
             G = gamma * G + r
             if (s, a) not in visited:
                 visited.add((s, a))
-                Q[s][a] += (G - Q[s][a]) * alpha
+                Q[s][a] += (W * G - Q[s][a]) * alpha
 
-        # Policy improvement: ε-greedy
-        def policy(s, Q=Q, eps=eps):
-            if np.random.rand() < eps:
-                return np.random.choice([0, 1])
-            return 0 if Q[s][0] >= Q[s][1] else 1
+                W *= 1.0 / max(p, 1e-12)
 
-    # final greedy policy
-    def greedy_policy(s):
-        return 0 if Q[s][0] >= Q[s][1] else 1
-
-    return Q, greedy_policy
+    return Q
 
 
-Q, pi = mc_policy_iter(train_env, num_episodes=500000, eps=0.1)
+Q = mc_policy_iter(train_env, num_episodes=500000, eps=0.1)
 
 # ----------- Evaluation with rendering -----------
 eval_env = gym.make("Blackjack-v1", render_mode="human")
 
 
-def run_step_by_step(env, policy, episodes=1):
+def run_step_by_step(env, policy, Q, episodes=1):
     for i in range(episodes):
         state, _ = env.reset()
         done = False
@@ -63,7 +77,7 @@ def run_step_by_step(env, policy, episodes=1):
 
         while not done:
             input("Press Enter to take next action...")
-            a = policy(state)
+            a = policy(Q, state)
             print(f"State: {state}, Action: {'Stick' if a==0 else 'Hit'}")
             state, r, terminated, truncated, _ = env.step(a)
             done = terminated or truncated
@@ -71,4 +85,4 @@ def run_step_by_step(env, policy, episodes=1):
         print("Final reward:", r)
 
 
-run_step_by_step(eval_env, pi, episodes=5)
+run_step_by_step(eval_env, target_policy, Q, episodes=5)
